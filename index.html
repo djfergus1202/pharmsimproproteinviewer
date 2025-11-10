@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Protein Conformation Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            overflow: hidden;
+        }
+
+        #root {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Custom scrollbar for control panel */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #444;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Loading spinner */
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Button hover effect */
+        .control-button:hover {
+            background-color: #333 !important;
+            border-color: #555 !important;
+        }
+
+        .regenerate-button:hover:not(:disabled) {
+            background-color: #388E3C !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React and Babel from CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Three.js and OrbitControls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <!-- Babel Standalone for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- Disclaimer Modal Component ---
+        const DisclaimerModal = ({ onClose }) => (
+            <div style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                backgroundColor: 'rgba(0, 0, 0, 0.85)',
+                color: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1000,
+            }}>
+                <div style={{
+                    backgroundColor: '#1a1a1a',
+                    padding: '30px',
+                    borderRadius: '8px',
+                    maxWidth: '500px',
+                    width: '90%',
+                    border: '1px solid #444',
+                    boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+                    textAlign: 'left'
+                }}>
+                    <h2 style={{ fontSize: '24px', color: '#4CAF50', marginBottom: '15px' }}>Disclaimer</h2>
+                    <p style={{ fontSize: '14px', lineHeight: '1.6', marginBottom: '15px' }}>
+                        This tool is for contributory and positive educational purposes only.
+                    </p>
+                    <p style={{ fontSize: '14px', lineHeight: '1.6', marginBottom: '15px' }}>
+                        The 3D conformations and suggestive quaternary structures are generated from C-alpha trace data and are probabilistic models. <strong>They are not experimentally determined structures.</strong>
+                    </p>
+                    <p style={{ fontSize: '14px', lineHeight: '1.6', marginBottom: '25px', fontWeight: '600' }}>
+                        Please validate all data with <i>in vitro</i> experimental results.
+                    </p>
+                    <p style={{ fontSize: '13px', color: '#888', marginBottom: '25px' }}>
+                        <i>Ideated by Mr. DJF - The New Chemist.</i>
+                    </p>
+                    <button
+                        onClick={onClose}
+                        style={{
+                            width: '100%',
+                            padding: '12px',
+                            backgroundColor: '#4CAF50',
+                            border: 'none',
+                            borderRadius: '4px',
+                            color: '#fff',
+                            fontSize: '14px',
+                            fontWeight: '600',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s'
+                        }}
+                        className="regenerate-button"
+                    >
+                        Acknowledge & Continue
+                    </button>
+                </div>
+            </div>
+        );
+
+        // --- Error Display Component ---
+        const ErrorDisplay = ({ message, onClose }) => (
+            <div style={{
+                position: 'absolute',
+                bottom: '20px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                backgroundColor: '#D32F2F',
+                color: 'white',
+                padding: '12px 20px',
+                borderRadius: '4px',
+                boxShadow: '0 4px 10px rgba(0,0,0,0.3)',
+                zIndex: 100,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+            }}>
+                <span>{message}</span>
+                <button onClick={onClose} style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'white',
+                    marginLeft: '15px',
+                    fontSize: '20px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    lineHeight: '1'
+                }}>&times;</button>
+            </div>
+        );
+
+        // --- Main App Component ---
+        const ProteinFoldingViewer = () => {
+            const [pdbData, setPdbData] = useState('');
+            const [ensembleSize, setEnsembleSize] = useState(10);
+            const [temperature, setTemperature] = useState(1.0);
+            const [showBackbone, setShowBackbone] = useState(true);
+            const [showEnsemble, setShowEnsemble] = useState(true);
+            const [loading, setLoading] = useState(false);
+            const [stats, setStats] = useState(null);
+            const [error, setError] = useState(null);
+            const [showDisclaimer, setShowDisclaimer] = useState(true);
+
+            const mountRef = useRef(null);
+            const sceneRef = useRef(null);
+            const rendererRef = useRef(null);
+            const controlsRef = useRef(null);
+            const modelsRef = useRef([]);
+
+            // Parse PDB file to extract C-alpha atoms and chain IDs
+            function parsePDB(pdbText) {
+                const lines = pdbText.split('\n');
+                const caAtoms = [];
+                const helices = [];
+                const sheets = [];
+                
+                lines.forEach(line => {
+                    if (line.startsWith('ATOM') || line.startsWith('HETATM')) {
+                        const atomName = line.substring(12, 16).trim();
+                        if (atomName === 'CA') {
+                            const x = parseFloat(line.substring(30, 38));
+                            const y = parseFloat(line.substring(38, 46));
+                            const z = parseFloat(line.substring(46, 54));
+                            const resNum = parseInt(line.substring(22, 26));
+                            const resName = line.substring(17, 20).trim();
+                            const chainID = line.substring(21, 22).trim() || 'A'; // Default to 'A' if chain is blank
+                            
+                            if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                                caAtoms.push({ x, y, z, resNum, resName, chainID });
+                            }
+                        }
+                    } else if (line.startsWith('HELIX')) {
+                        const chainID = line.substring(19, 20).trim() || 'A';
+                        const startRes = parseInt(line.substring(21, 25));
+                        const endRes = parseInt(line.substring(33, 37));
+                        helices.push({ chainID, startRes, endRes });
+                    } else if (line.startsWith('SHEET')) {
+                        const chainID = line.substring(21, 22).trim() || 'A';
+                        const startRes = parseInt(line.substring(22, 26));
+                        const endRes = parseInt(line.substring(33, 37));
+                        sheets.push({ chainID, startRes, endRes });
+                    }
+                });
+                
+                return { caAtoms, helices, sheets };
+            };
+
+            // Generate probabilistic ensemble of structures
+            function generateEnsemble(caAtoms, numModels, temp) {
+                const ensemble = [];
+                
+                for (let model = 0; model < numModels; model++) {
+                    const perturbedAtoms = caAtoms.map((atom, idx) => {
+                        // Add Gaussian noise based on B-factor approximation and temperature
+                        const sigma = temp * (0.5 + Math.random() * 0.5);
+                        
+                        return {
+                            ...atom,
+                            x: atom.x + (Math.random() - 0.5) * 2 * sigma,
+                            y: atom.y + (Math.random() - 0.5) * 2 * sigma,
+                            z: atom.z + (Math.random() - 0.5) * 2 * sigma
+                        };
+                    });
+                    
+                    ensemble.push(perturbedAtoms);
+                }
+                
+                return ensemble;
+            };
+
+            // Calculate RMSD between two structures
+            function calculateRMSD(atoms1, atoms2) {
+                if (atoms1.length !== atoms2.length) return 0;
+                
+                let sumSqDist = 0;
+                atoms1.forEach((atom, idx) => {
+                    const dx = atom.x - atoms2[idx].x;
+                    const dy = atom.y - atoms2[idx].y;
+                    const dz = atom.z - atoms2[idx].z;
+                    sumSqDist += dx*dx + dy*dy + dz*dz;
+                });
+                
+                return Math.sqrt(sumSqDist / atoms1.length);
+            };
+
+            // Initialize Three.js scene
+            useEffect(() => {
+                if (!mountRef.current) return;
+
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x0a0a0a);
+                sceneRef.current = scene;
+
+                const camera = new THREE.PerspectiveCamera(
+                    75,
+                    mountRef.current.clientWidth / mountRef.current.clientHeight,
+                    0.1,
+                    1000
+                );
+                camera.position.z = 50;
+
+                const renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
+                mountRef.current.appendChild(renderer.domElement);
+                rendererRef.current = renderer;
+
+                const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controlsRef.current = controls;
+
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                scene.add(ambientLight);
+
+                const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight1.position.set(1, 1, 1);
+                scene.add(directionalLight1);
+
+                const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+                directionalLight2.position.set(-1, -1, -1);
+                scene.add(directionalLight2);
+
+                const animate = () => {
+                    requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene, camera);
+                };
+                animate();
+
+                const handleResize = () => {
+                    if (!mountRef.current) return;
+                    camera.aspect = mountRef.current.clientWidth / mountRef.current.clientHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(mountRef.current.clientWidth, mountRef.current.clientHeight);
+                };
+                window.addEventListener('resize', handleResize);
+
+                return () => {
+                    window.removeEventListener('resize', handleResize);
+                    if (mountRef.current && mountRef.current.contains(renderer.domElement)) {
+                        mountRef.current.removeChild(renderer.domElement);
+                    }
+                    renderer.dispose();
+                };
+            }, []);
+
+            // Visualize structures
+            function visualizeStructures(pdbData, ensemble) {
+                const { caAtoms, helices, sheets } = pdbData;
+                const scene = sceneRef.current;
+                if (!scene) return;
+
+                // Clear previous models
+                modelsRef.current.forEach(obj => scene.remove(obj));
+                modelsRef.current = [];
+
+                // Calculate center of mass for all atoms
+                const center = new THREE.Vector3();
+                caAtoms.forEach(atom => {
+                    center.x += atom.x;
+                    center.y += atom.y;
+                    center.z += atom.z;
+                });
+                center.divideScalar(caAtoms.length);
+
+                // Group atoms by chain
+                const chains = {};
+                caAtoms.forEach(atom => {
+                    if (!chains[atom.chainID]) {
+                        chains[atom.chainID] = [];
+                    }
+                    chains[atom.chainID].push(atom);
+                });
+
+                const chainColors = [0x4CAF50, 0x2196F3, 0xF44336, 0xFFEB3B, 0x9C27B0, 0xFF9800, 0x00BCD4, 0x8BC34A];
+                const secondaryStructureMaterials = {
+                    helix: new THREE.MeshPhongMaterial({ shininess: 100, side: THREE.DoubleSide }),
+                    sheet: new THREE.MeshPhongMaterial({ shininess: 100, side: THREE.DoubleSide }),
+                    loop: new THREE.MeshPhongMaterial({ shininess: 100, side: THREE.DoubleSide })
+                };
+
+                // Render main backbone (colored by chain)
+                if (showBackbone) {
+                    let chainIndex = 0;
+                    for (const chainID in chains) {
+                        const atomsInChain = chains[chainID];
+                        if (atomsInChain.length < 2) continue; // Need at least 2 points for a curve
+
+                        const color = new THREE.Color(chainColors[chainIndex % chainColors.length]);
+                        
+                        // --- NEW: Segment by secondary structure ---
+                        const segments = [];
+                        let currentSegment = { type: 'loop', points: [] };
+
+                        for (let i = 0; i < atomsInChain.length; i++) {
+                            const atom = atomsInChain[i];
+                            let structureType = 'loop';
+
+                            // Check if atom is in a helix
+                            for (const helix of helices) {
+                                if (helix.chainID === chainID && atom.resNum >= helix.startRes && atom.resNum <= helix.endRes) {
+                                    structureType = 'helix';
+                                    break;
+                                }
+                            }
+                            
+                            // Check if atom is in a sheet (if not in a helix)
+                            if (structureType === 'loop') {
+                                for (const sheet of sheets) {
+                                    if (sheet.chainID === chainID && atom.resNum >= sheet.startRes && atom.resNum <= sheet.endRes) {
+                                        structureType = 'sheet';
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // If type changes, push old segment and start new one
+                            if (structureType !== currentSegment.type && currentSegment.points.length > 0) {
+                                // Add last point to new segment to ensure continuity
+                                if(currentSegment.points.length > 0) {
+                                   currentSegment.points.push(new THREE.Vector3(atom.x - center.x, atom.y - center.y, atom.z - center.z));
+                                }
+                                segments.push(currentSegment);
+                                currentSegment = { type: structureType, points: [] };
+                                // Add previous point to new segment
+                                if (i > 0) {
+                                    const prevAtom = atomsInChain[i-1];
+                                    currentSegment.points.push(new THREE.Vector3(prevAtom.x - center.x, prevAtom.y - center.y, prevAtom.z - center.z));
+                                }
+                            }
+
+                            currentSegment.points.push(new THREE.Vector3(
+                                atom.x - center.x,
+                                atom.y - center.y,
+                                atom.z - center.z
+                            ));
+                        }
+                        // Push the last segment
+                        if (currentSegment.points.length > 1) {
+                            segments.push(currentSegment);
+                        }
+                        
+                        // --- Render segments ---
+                        segments.forEach(segment => {
+                            if (segment.points.length < 2) return;
+
+                            const curve = new THREE.CatmullRomCurve3(segment.points);
+                            let geometry;
+                            let material;
+
+                            switch(segment.type) {
+                                case 'helix':
+                                    geometry = new THREE.TubeGeometry(curve, segment.points.length * 2, 0.6, 12, false);
+                                    material = secondaryStructureMaterials.helix.clone();
+                                    material.color = color;
+                                    break;
+                                case 'sheet':
+                                    // Use a wider, flatter tube for sheets
+                                    geometry = new THREE.TubeGeometry(curve, segment.points.length * 2, 0.6, 4, false); // 4 segments gives a flat-ish look
+                                    material = secondaryStructureMaterials.sheet.clone();
+                                    material.color = color;
+                                    material.emissive = color.clone().multiplyScalar(0.2); // Add a slight glow
+                                    break;
+                                default: // loop
+                                    geometry = new THREE.TubeGeometry(curve, segment.points.length * 2, 0.2, 8, false);
+                                    material = secondaryStructureMaterials.loop.clone();
+                                    material.color = color;
+                                    break;
+                            }
+
+                            const tubeMesh = new THREE.Mesh(geometry, material);
+                            scene.add(tubeMesh);
+                            modelsRef.current.push(tubeMesh);
+                        });
+                        // --- End new segment logic ---
+
+                        // Optional: Add spheres for CA atoms
+                        atomsInChain.forEach(atom => {
+                            const sphereGeometry = new THREE.SphereGeometry(0.4, 16, 16);
+                            const sphereMaterial = new THREE.MeshPhongMaterial({
+                                color: color,
+                                shininess: 100,
+                                transparent: true,
+                                opacity: 0.2 // Make them faint
+                            });
+                            const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+                            sphere.position.set(
+                                atom.x - center.x,
+                                atom.y - center.y,
+                                atom.z - center.z
+                            );
+                            scene.add(sphere);
+                            modelsRef.current.push(sphere);
+                        });
+
+                        chainIndex++;
+                    }
+                }
+
+                // Render ensemble models
+                if (showEnsemble && ensemble.length > 0) {
+                    ensemble.forEach((model, modelIdx) => {
+                        const opacity = 0.15 - (modelIdx * 0.01);
+                        const hue = modelIdx / ensemble.length;
+                        const color = new THREE.Color().setHSL(hue, 0.7, 0.5);
+
+                        // Group model atoms by chain
+                        const modelChains = {};
+                        model.forEach(atom => {
+                            if (!modelChains[atom.chainID]) {
+                                modelChains[atom.chainID] = [];
+                            }
+                            modelChains[atom.chainID].push(atom);
+                        });
+
+                        for (const chainID in modelChains) {
+                            const atomsInChain = modelChains[chainID];
+                            if (atomsInChain.length < 2) continue;
+
+                            const points = atomsInChain.map(atom => new THREE.Vector3(
+                                atom.x - center.x,
+                                atom.y - center.y,
+                                atom.z - center.z
+                            ));
+
+                            const curve = new THREE.CatmullRomCurve3(points);
+                            const tubeGeometry = new THREE.TubeGeometry(curve, atomsInChain.length * 2, 0.2, 8, false);
+                            const tubeMaterial = new THREE.MeshPhongMaterial({
+                                color: color,
+                                transparent: true,
+                                opacity: Math.max(opacity, 0.05), // Ensure minimum visibility
+                                shininess: 50,
+                                side: THREE.DoubleSide // Add side
+                            });
+                            const tubeMesh = new THREE.Mesh(tubeGeometry, tubeMaterial);
+                            scene.add(tubeMesh);
+                            modelsRef.current.push(tubeMesh);
+                        }
+                    });
+                }
+
+                // Calculate stats
+                const rmsdValues = ensemble.map(model => calculateRMSD(caAtoms, model));
+                const avgRMSD = rmsdValues.length ? rmsdValues.reduce((a, b) => a + b, 0) / rmsdValues.length : 0;
+                const maxRMSD = rmsdValues.length ? Math.max(...rmsdValues) : 0;
+
+                setStats({
+                    numResidues: caAtoms.length,
+                    numChains: Object.keys(chains).length,
+                    numModels: ensemble.length,
+                    avgRMSD: avgRMSD.toFixed(3),
+                    maxRMSD: maxRMSD.toFixed(3)
+                });
+
+                // Adjust camera
+                if (controlsRef.current) {
+                    controlsRef.current.target.copy(center);
+                    controlsRef.current.update();
+                }
+            };
+
+            function handleFileUpload(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                setLoading(true);
+                setError(null);
+                const reader = new FileReader();
+                
+                reader.onload = (e) => {
+                    const text = e.target.result;
+                    setPdbData(text);
+                    processStructure(text);
+                };
+                
+                reader.readAsText(file);
+            };
+
+            function processStructure(text) {
+                try {
+                    const pdbDataObj = parsePDB(text); // <-- Get object
+                    if (pdbDataObj.caAtoms.length === 0) { // <-- Check caAtoms
+                        setError('No C-alpha (CA) atoms found in the PDB file.');
+                        setLoading(false);
+                        return;
+                    }
+
+                    const ensemble = generateEnsemble(pdbDataObj.caAtoms, ensembleSize, temperature);
+                    visualizeStructures(pdbDataObj, ensemble); // <-- Pass object
+                    setLoading(false);
+                } catch (error) {
+                    setError('Error processing PDB file: ' + error.message);
+                    setLoading(false);
+                }
+            };
+
+            function regenerateEnsemble() {
+                if (!pdbData) return;
+                setLoading(true);
+                setError(null);
+                // Use setTimeout to allow UI to update to "loading"
+                setTimeout(() => processStructure(pdbData), 50); 
+            };
+
+            function loadExample() {
+                setLoading(true);
+                setError(null);
+                // Example PDB with two chains (A and B) and HELIX records
+                const examplePDB = `ATOM      1  CA  MET A   1       10.000  10.000  10.000  1.00 20.00           C
+ATOM      2  CA  GLY A   2       13.800  10.000  10.000  1.00 20.00           C
+ATOM      3  CA  ALA A   3       17.600  10.000  10.000  1.00 20.00           C
+ATOM      4  CA  VAL A   4       21.400  11.000  10.000  1.00 20.00           C
+ATOM      5  CA  LEU A   5       25.200  12.000  10.000  1.00 20.00           C
+HELIX    1  1 MET A    1  LEU A    5  1                                   5
+ATOM      6  CA  ILE A   6       29.000  12.000  11.000  1.00 20.00           C
+ATOM      7  CA  LYS A   7       32.800  11.000  12.000  1.00 20.00           C
+ATOM      8  CA  PRO A   8       36.600  10.000  13.000  1.00 20.00           C
+ATOM      9  CA  SER A   9       40.400   9.000  14.000  1.00 20.00           C
+ATOM     10  CA  THR A  10       44.200   8.000  14.000  1.00 20.00           C
+SHEET    1 A 1 LYS A    7  SER A    9  0
+ATOM     11  CA  MET B   1       30.000  10.000  10.000  1.00 20.00           C
+ATOM     12  CA  GLY B   2       33.800  10.000  10.000  1.00 20.00           C
+ATOM     13  CA  ALA B   3       37.600  10.000  10.000  1.00 20.00           C
+ATOM     14  CA  VAL B   4       41.400  11.000  10.000  1.00 20.00           C
+ATOM     15  CA  LEU B   5       45.200  12.000  10.000  1.00 20.00           C
+HELIX    2  2 MET B    1  LEU B    5  1                                   5
+ATOM     16  CA  ILE B   6       49.000  12.000  11.000  1.00 20.00           C
+ATOM     17  CA  LYS B   7       52.800  11.000  12.000  1.00 20.00           C
+ATOM     18  CA  PRO B   8       56.600  10.000  13.000  1.00 20.00           C
+ATOM     19  CA  SER B   9       60.400   9.000  14.000  1.00 20.00           C
+ATOM     20  CA  THR B  10       64.200   8.000  14.000  1.00 20.00           C
+SHEET    1 B 1 LYS B    7  SER B    9  0
+END`;
+                
+                setPdbData(examplePDB);
+                setTimeout(() => processStructure(examplePDB), 50);
+            };
+
+            // Re-run visualization when toggles change
+            useEffect(() => {
+                if (pdbData && sceneRef.current) {
+                    processStructure(pdbData);
+                }
+            }, [showBackbone, showEnsemble, pdbData]); // Added pdbData dependency
+
+            return (
+                <div style={{ width: '100vw', height: '100vh', display: 'flex', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                    {showDisclaimer && <DisclaimerModal onClose={() => setShowDisclaimer(false)} />}
+                    
+                    <div style={{ 
+                        width: '320px', 
+                        backgroundColor: '#1a1a1a', 
+                        color: '#fff', 
+                        padding: '20px',
+                        overflowY: 'auto',
+                        boxShadow: '2px 0 10px rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        height: '100vh'
+                    }}>
+                        <h1 style={{ fontSize: '24px', marginBottom: '10px', color: '#4CAF50' }}>
+                            Protein Conformation Viewer
+                        </h1>
+                        <p style={{ fontSize: '13px', color: '#aaa', marginBottom: '20px' }}>
+                            Visualize C-alpha traces and suggestive quaternary structures
+                        </p>
+
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ 
+                                display: 'block', 
+                                marginBottom: '8px', 
+                                fontSize: '14px',
+                                fontWeight: '600',
+                                color: '#4CAF50'
+                            }}>
+                                Upload C-Alpha PDB File
+                            </label>
+                            <input
+                                type="file"
+                                accept=".pdb"
+                                onChange={handleFileUpload}
+                                style={{
+                                    width: '100%',
+                                    padding: '8px',
+                                    backgroundColor: '#2a2a2a',
+                                    border: '1px solid #444',
+                                    borderRadius: '4px',
+                                    color: '#fff',
+                                    fontSize: '13px',
+                                    cursor: 'pointer'
+                                }}
+                            />
+                            <button
+                                onClick={loadExample}
+                                style={{
+                                    width: '100%',
+                                    marginTop: '10px',
+                                    padding: '10px',
+                                    backgroundColor: '#2a2a2a',
+                                    border: '1px solid #4CAF50',
+                                    borderRadius: '4px',
+                                    color: '#4CAF50',
+                                    fontSize: '13px',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s'
+                                }}
+                                className="control-button"
+                            >
+                                Load Example (Dimer)
+                            </button>
+                        </div>
+
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ 
+                                display: 'block', 
+                                marginBottom: '8px', 
+                                fontSize: '14px',
+                                fontWeight: '600',
+                                color: '#4CAF50'
+                            }}>
+                                Ensemble Size: {ensembleSize}
+                            </label>
+                            <input
+                                type="range"
+                                min="1"
+                                max="50"
+                                value={ensembleSize}
+                                onChange={(e) => setEnsembleSize(parseInt(e.target.value))}
+                                style={{ width: '100%' }}
+                            />
+                            <p style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
+                                Number of probabilistic models to generate
+                            </p>
+                        </div>
+
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ 
+                                display: 'block', 
+                                marginBottom: '8px', 
+                                fontSize: '14px',
+                                fontWeight: '600',
+                                color: '#4CAF50'
+                            }}>
+                                Temperature: {temperature.toFixed(2)}
+                            </label>
+                            <input
+                                type="range"
+                                min="0.1"
+                                max="5.0"
+                                step="0.1"
+                                value={temperature}
+                                onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                                style={{ width: '100%' }}
+                            />
+                            <p style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
+                                Controls conformational flexibility (higher = more variation)
+                            </p>
+                        </div>
+
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ 
+                                display: 'flex',
+                                alignItems: 'center',
+                                marginBottom: '10px',
+                                fontSize: '14px',
+                                cursor: 'pointer'
+                            }}>
+                                <input
+                                    type="checkbox"
+                                    checked={showBackbone}
+                                    onChange={(e) => setShowBackbone(e.target.checked)}
+                                    style={{ marginRight: '8px' }}
+                                />
+                                Show Tertiary Structure (Ribbons)
+                            </label>
+                            <label style={{ 
+                                display: 'flex',
+                                alignItems: 'center',
+                                fontSize: '14px',
+                                cursor: 'pointer'
+                            }}>
+                                <input
+                                    type="checkbox"
+                                    checked={showEnsemble}
+                                    onChange={(e) => setShowEnsemble(e.target.checked)}
+                                    style={{ marginRight: '8px' }}
+                                />
+                                Show Ensemble Models
+                            </label>
+                        </div>
+
+                        <button
+                            onClick={regenerateEnsemble}
+                            disabled={!pdbData || loading}
+                            style={{
+                                width: '100%',
+                                padding: '12px',
+                                backgroundColor: loading ? '#555' : '#4CAF50',
+                                border: 'none',
+                                borderRadius: '4px',
+                                color: '#fff',
+                                fontSize: '14px',
+                                fontWeight: '600',
+                                cursor: loading ? 'not-allowed' : 'pointer',
+                                transition: 'all 0.2s',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center'
+                            }}
+                            className="regenerate-button"
+                        >
+                            {loading && <span className="loading-spinner"></span>}
+                            {loading ? 'Processing...' : 'Regenerate Ensemble'}
+                        </button>
+
+                        {stats && (
+                            <div style={{ 
+                                marginTop: '20px', 
+                                padding: '15px', 
+                                backgroundColor: '#2a2a2a',
+                                borderRadius: '4px',
+                                border: '1px solid #444'
+                            }}>
+                                <h3 style={{ fontSize: '14px', marginBottom: '10px', color: '#4CAF50' }}>
+                                    Structure Statistics
+                                </h3>
+                                <div style={{ fontSize: '13px', lineHeight: '1.8' }}>
+                                    <div><strong>Residues:</strong> {stats.numResidues}</div>
+                                    <div><strong>Chains:</strong> {stats.numChains}</div>
+                                    <div><strong>Models:</strong> {stats.numModels}</div>
+                                    <div><strong>Avg RMSD:</strong> {stats.avgRMSD} Å</div>
+                                    <div><strong>Max RMSD:</strong> {stats.maxRMSD} Å</div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div style={{ 
+                            marginTop: '20px', 
+                            padding: '15px', 
+                            backgroundColor: '#2a2a2a',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            lineHeight: '1.6',
+                            color: '#aaa',
+                            border: '1px solid #444'
+                        }}>
+                            <h3 style={{ fontSize: '13px', marginBottom: '8px', color: '#fff' }}>
+                                How to Use
+                            </h3>
+                            <ul style={{ paddingLeft: '20px', margin: 0 }}>
+                                <li>Upload a PDB file containing one or more C-alpha chains.</li>
+                                <li>The main structure shows ribbons (helices/sheets/loops) colored by chain.</li>
+                                <li>Colored transparent models show probabilistic conformations.</li>
+                                <li>Use mouse to rotate, zoom, and pan the view.</li>
+                            </ul>
+                        </div>
+
+                        <div style={{ fontSize: '11px', color: '#777', marginTop: 'auto', paddingTop: '20px', borderTop: '1px solid #333', textAlign: 'center' }}>
+                            <p>Ideated by Mr. DJF - The New Chemist.</p>
+                            <p style={{marginTop: '5px'}}>For contributory and positive educational purposes only.</p>
+                        </div>
+                    </div>
+
+                    <div ref={mountRef} style={{ flex: 1, position: 'relative' }}>
+                        {error && <ErrorDisplay message={error} onClose={() => setError(null)} />}
+                        {!pdbData && (
+                            <div style={{
+                                position: 'absolute',
+                                top: '50%',
+                                left: '50%',
+                                transform: 'translate(-50%, -50%)',
+                                textAlign: 'center',
+                                color: '#666',
+                                fontSize: '18px'
+                            }}>
+                                <div style={{ fontSize: '48px', marginBottom: '20px' }}>🧬</div>
+                                <div>Upload a PDB file or load example to begin</div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ProteinFoldingViewer />);
+    </script>
+</body>
+</html>
